@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Media Sync App</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Media Sync App</h1>
+
+        <!-- File Upload -->
+        <form id="upload-form" enctype="multipart/form-data">
+            <input type="file" id="file-input" name="file">
+            <button type="submit">Upload</button>
+        </form>
+
+        <!-- Audio Player -->
+        <audio id="audio-player" controls>
+            <source id="audio-source" src="" type="audio/mpeg">
+            Your browser does not support the audio element.
+        </audio>
+    </div>
+
+    <script>
+        const socket = io();
+        const audioPlayer = document.getElementById('audio-player');
+        const audioSource = document.getElementById('audio-source');
+        const uploadForm = document.getElementById('upload-form');
+        const fileInput = document.getElementById('file-input');
+    
+        let isSyncing = false;
+    
+        // Handle file upload
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const file = fileInput.files[0];
+            if (!file) {
+                alert('Please select a file!');
+                return;
+            }
+    
+            const formData = new FormData();
+            formData.append('file', file);
+    
+            const response = await fetch('/upload', {
+                method: 'POST',
+                body: formData
+            });
+    
+            if (response.ok) {
+                const data = await response.json();
+                const fileUrl = `/uploads/${encodeURIComponent(data.filename)}`;
+                updateAudioSource(fileUrl);
+            } else {
+                const error = await response.json();
+                alert(error.error || 'Upload failed');
+            }
+        });
+    
+        // Update audio source and sync with all devices
+        function updateAudioSource(fileUrl) {
+            audioSource.src = fileUrl;
+            audioPlayer.load();
+            audioPlayer.play();
+            socket.emit('play', { currentTime: 0, fileUrl, timestamp: Date.now() });
+        }
+    
+        // Sync playback across devices
+        audioPlayer.addEventListener('play', () => {
+            if (!isSyncing) {
+                socket.emit('play', { currentTime: audioPlayer.currentTime, fileUrl: audioSource.src, timestamp: Date.now() });
+            }
+        });
+    
+        audioPlayer.addEventListener('pause', () => {
+            if (!isSyncing) {
+                socket.emit('pause');
+            }
+        });
+    
+        audioPlayer.addEventListener('seeked', () => {
+            if (!isSyncing) {
+                socket.emit('seek', { currentTime: audioPlayer.currentTime });
+            }
+        });
+    
+        audioPlayer.addEventListener('ended', () => {
+            if (!isSyncing) {
+                socket.emit('ended');
+            }
+        });
+    
+        // Handle sync events
+        socket.on('play', (data) => {
+            if (data.fileUrl !== audioSource.src) {
+                audioSource.src = data.fileUrl;
+                audioPlayer.load();
+            }
+    
+            const networkLatency = (Date.now() - data.timestamp) / 1000; // Latency in seconds
+            const adjustedTime = data.currentTime + networkLatency;
+    
+            if (audioPlayer.paused || Math.abs(audioPlayer.currentTime - adjustedTime) > 0.2) {
+                isSyncing = true;
+                audioPlayer.currentTime = adjustedTime;
+                audioPlayer.play();
+                isSyncing = false;
+            }
+        });
+    
+        socket.on('pause', () => {
+            if (!audioPlayer.paused) {
+                isSyncing = true;
+                audioPlayer.pause();
+                isSyncing = false;
+            }
+        });
+    
+        socket.on('seek', (data) => {
+            if (Math.abs(audioPlayer.currentTime - data.currentTime) > 0.2) {
+                isSyncing = true;
+                audioPlayer.currentTime = data.currentTime;
+                isSyncing = false;
+            }
+        });
+    
+        socket.on('ended', () => {
+            if (!audioPlayer.ended) {
+                isSyncing = true;
+                audioPlayer.pause();
+                isSyncing = false;
+            }
+        });
+    
+        // Listen for new file uploads
+        socket.on('new_file', (data) => {
+            updateAudioSource(data.file_url);
+        });
+    </script>
+    
+</body>
+</html>
